@@ -1,0 +1,33 @@
+{
+  "entities": {
+    "AppConfig": {
+      "title": "AppConfig",
+      "description": "Configuration settings for GuberStudio kiosk browser, including target link synchronized across all client devices.",
+      "type": "object",
+      "properties": {
+        "targetUrl": {
+          "type": "string",
+          "description": "The current URL loaded by all client devices in the kiosk webview."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the link was last updated."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Identifier of the admin who updated the link."
+        }
+      },
+      "required": [
+        "targetUrl"
+      ]
+    }
+  },
+  "firestore": {
+    "/app_config/{configId}": {
+      "schema": "AppConfig",
+      "description": "Stores app-wide settings including the active kiosk target link."
+    }
+  }
+}

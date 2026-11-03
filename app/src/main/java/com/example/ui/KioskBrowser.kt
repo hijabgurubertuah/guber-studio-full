@@ -67,6 +67,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -77,12 +78,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RestartAlt
@@ -97,10 +108,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import com.example.data.AppConfigRepository
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -220,17 +239,54 @@ fun KioskBrowserScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val appConfigRepo = remember(context) { AppConfigRepository(context) }
     val sharedPrefs = remember(context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
-    var currentUrl by remember { mutableStateOf<String?>(TARGET_URL) }
+    var currentTargetUrl by rememberSaveable {
+        mutableStateOf(appConfigRepo.getCachedTargetUrl(TARGET_URL))
+    }
+    var currentUrl by remember { mutableStateOf<String?>(currentTargetUrl) }
     var isLoading by remember { mutableStateOf(true) }
     var isRefreshing by remember { mutableStateOf(false) }
     var hasError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var loadingProgress by remember { mutableIntStateOf(0) }
+
+    // Side Admin Drawer states (Minimalist hidden side menu)
+    var isSideMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var isAdminLoggedIn by rememberSaveable { mutableStateOf(false) }
+    var adminPasswordInput by rememberSaveable { mutableStateOf("") }
+    var adminPasswordError by rememberSaveable { mutableStateOf<String?>(null) }
+    var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
+
+    var newTargetUrlInput by rememberSaveable { mutableStateOf("") }
+    var isSavingUrl by remember { mutableStateOf(false) }
+    var urlSaveMessage by remember { mutableStateOf<String?>(null) }
+    var isUrlSaveSuccess by remember { mutableStateOf(false) }
+
+    // Change Password sub-section
+    var showChangePasswordSection by rememberSaveable { mutableStateOf(false) }
+    var newPasswordInput by rememberSaveable { mutableStateOf("") }
+    var passwordChangeMessage by remember { mutableStateOf<String?>(null) }
+
+    // Real-time synchronization of Target URL from Firestore across all devices
+    LaunchedEffect(Unit) {
+        appConfigRepo.observeTargetUrl(TARGET_URL).collect { newUrl ->
+            if (newUrl.isNotBlank() && newUrl != currentTargetUrl) {
+                currentTargetUrl = newUrl
+                val wv = webViewInstance
+                if (wv != null && !isPostLoginUrl(wv.url)) {
+                    wv.post {
+                        wv.loadUrl(newUrl)
+                    }
+                }
+            }
+        }
+    }
 
     // Infinite rotation animation for refresh icon when refreshing or loading
     val infiniteTransition = rememberInfiniteTransition(label = "kiosk_refresh_rotation")
@@ -698,7 +754,7 @@ fun KioskBrowserScreen(
                             // Check if login completed and landed on Google home/myaccount page
                             if (isPostLoginUrl(url)) {
                                 view?.post {
-                                    view.loadUrl(TARGET_URL)
+                                    view.loadUrl(currentTargetUrl)
                                 }
                                 return
                             }
@@ -740,7 +796,7 @@ fun KioskBrowserScreen(
                         }
                     }
 
-                    loadUrl(TARGET_URL)
+                    loadUrl(currentTargetUrl)
                     webViewInstance = this
                 }
             },
@@ -806,7 +862,7 @@ fun KioskBrowserScreen(
                                 if (!current.isNullOrBlank() && (isGeminiCanvasUrl(current) || current.startsWith("http"))) {
                                     wv.reload()
                                 } else {
-                                    wv.loadUrl(TARGET_URL)
+                                    wv.loadUrl(currentTargetUrl)
                                 }
                             }
                         }
@@ -938,7 +994,7 @@ fun KioskBrowserScreen(
                         onClick = {
                             hasError = false
                             isLoading = true
-                            webViewInstance?.loadUrl(TARGET_URL)
+                            webViewInstance?.loadUrl(currentTargetUrl)
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ToskaBright,
@@ -963,6 +1019,497 @@ fun KioskBrowserScreen(
             onDismiss = { activeDownloadEvent = null },
             modifier = Modifier.align(Alignment.TopCenter)
         )
+
+        // 7. Minimalist Side Admin Tab Button (Hidden/Collapsed edge trigger)
+        AnimatedVisibility(
+            visible = !isSideMenuOpen,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(150)),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+                    .background(ToskaDarkMedium.copy(alpha = 0.85f))
+                    .border(
+                        BorderStroke(1.dp, MalayGold.copy(alpha = 0.6f)),
+                        RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
+                    )
+                    .clickable {
+                        adminPasswordError = null
+                        urlSaveMessage = null
+                        if (isAdminLoggedIn) {
+                            newTargetUrlInput = currentTargetUrl
+                        }
+                        isSideMenuOpen = true
+                    }
+                    .padding(horizontal = 7.dp, vertical = 14.dp)
+                    .testTag("side_admin_tab_button"),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isAdminLoggedIn) Icons.Default.AdminPanelSettings else Icons.Default.Lock,
+                    contentDescription = "Buka Menu Admin",
+                    tint = MalayGold,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        // 8. Minimalist Side Admin Drawer (Password-protected, URL changer & device sync)
+        AnimatedVisibility(
+            visible = isSideMenuOpen,
+            enter = fadeIn(tween(200)) + slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(250)),
+            exit = fadeOut(tween(150)) + slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .widthIn(max = 330.dp)
+                    .padding(vertical = 12.dp, horizontal = 6.dp)
+                    .testTag("side_admin_drawer"),
+                shape = RoundedCornerShape(18.dp),
+                color = ToskaDark.copy(alpha = 0.98f),
+                border = BorderStroke(1.5.dp, MalayGold.copy(alpha = 0.75f)),
+                shadowElevation = 10.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // Header with title and Hide/Close Button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AdminPanelSettings,
+                                contentDescription = null,
+                                tint = MalayGold,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Text(
+                                text = "Admin Kiosk Link",
+                                color = MalayGold,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                isSideMenuOpen = false
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("close_side_menu_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Sembunyikan Menu",
+                                tint = Color.LightGray,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Realtime Firebase Status Badge
+                    Surface(
+                        color = ToskaDarkMedium,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(0.8.dp, ToskaBright.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF4CAF50))
+                            )
+                            Text(
+                                text = "Firebase Real-time Sync Aktif",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (!isAdminLoggedIn) {
+                        // Section 1: Admin Password Entry
+                        Text(
+                            text = "Masuk Sebagai Admin",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Masukkan password untuk mengubah link tujuan aplikasi ini.",
+                            color = Color.LightGray,
+                            fontSize = 12.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        OutlinedTextField(
+                            value = adminPasswordInput,
+                            onValueChange = {
+                                adminPasswordInput = it
+                                adminPasswordError = null
+                            },
+                            label = { Text("Password Admin", color = Color.LightGray) },
+                            placeholder = { Text("Masukkan password", color = Color.Gray) },
+                            singleLine = true,
+                            visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                                    Icon(
+                                        imageVector = if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (isPasswordVisible) "Sembunyikan password" else "Tampilkan password",
+                                        tint = MalayGold
+                                    )
+                                }
+                            },
+                            isError = adminPasswordError != null,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MalayGold,
+                                unfocusedBorderColor = ToskaBright.copy(alpha = 0.5f),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = MalayGold
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_password_input")
+                        )
+
+                        if (adminPasswordError != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = adminPasswordError ?: "",
+                                color = Color(0xFFFF5252),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    adminPasswordInput = ""
+                                    adminPasswordError = null
+                                    isSideMenuOpen = false
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color.LightGray
+                                ),
+                                border = BorderStroke(1.dp, Color.Gray),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Tutup", fontSize = 13.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (appConfigRepo.verifyAdminPassword(adminPasswordInput.trim())) {
+                                        isAdminLoggedIn = true
+                                        adminPasswordInput = ""
+                                        adminPasswordError = null
+                                        newTargetUrlInput = currentTargetUrl
+                                    } else {
+                                        adminPasswordError = "Password salah! (Bawaan: admin)"
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MalayGold,
+                                    contentColor = ToskaDark
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("admin_login_submit_button")
+                            ) {
+                                Text("Masuk", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Tips: Password awal sistem adalah \"admin\". Anda dapat mengubahnya setelah masuk.",
+                            color = Color.Gray,
+                            fontSize = 11.sp
+                        )
+                    } else {
+                        // Section 2: Logged-in Admin Screen - Change URL & Sync
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                color = ToskaBright.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = MalayGold,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "Admin Terverifikasi",
+                                        color = MalayGold,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            TextButton(
+                                onClick = {
+                                    isAdminLoggedIn = false
+                                    urlSaveMessage = null
+                                }
+                            ) {
+                                Text("Keluar", color = Color(0xFFFF8A80), fontSize = 12.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Current Synced URL Display
+                        Text(
+                            text = "Link Aktif Saat Ini:",
+                            color = Color.LightGray,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Surface(
+                            color = ToskaDarkMedium,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(0.8.dp, ToskaBright.copy(alpha = 0.3f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = currentTargetUrl,
+                                color = MalayGoldLight,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(8.dp),
+                                maxLines = 3
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // New URL Input
+                        Text(
+                            text = "Masukkan Link Baru:",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        OutlinedTextField(
+                            value = newTargetUrlInput,
+                            onValueChange = {
+                                newTargetUrlInput = it
+                                urlSaveMessage = null
+                            },
+                            placeholder = { Text("https://...", color = Color.Gray) },
+                            singleLine = false,
+                            maxLines = 3,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MalayGold,
+                                unfocusedBorderColor = ToskaBright.copy(alpha = 0.5f),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = MalayGold
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_target_url_input")
+                        )
+
+                        if (urlSaveMessage != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = urlSaveMessage ?: "",
+                                color = if (isUrlSaveSuccess) Color(0xFF69F0AE) else Color(0xFFFF5252),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Save & Sync Button
+                        Button(
+                            onClick = {
+                                val target = newTargetUrlInput.trim()
+                                if (target.isBlank() || (!target.startsWith("http://") && !target.startsWith("https://"))) {
+                                    urlSaveMessage = "URL harus diawali https:// atau http://"
+                                    isUrlSaveSuccess = false
+                                    return@Button
+                                }
+                                coroutineScope.launch {
+                                    isSavingUrl = true
+                                    urlSaveMessage = null
+                                    val result = appConfigRepo.updateTargetUrl(target)
+                                    isSavingUrl = false
+                                    if (result.isSuccess) {
+                                        isUrlSaveSuccess = true
+                                        urlSaveMessage = "Sukses! Link telah tersinkron ke semua perangkat."
+                                        currentTargetUrl = target
+                                        webViewInstance?.loadUrl(target)
+                                        Toast.makeText(context, "Link berhasil disinkronkan ke semua perangkat!", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        isUrlSaveSuccess = false
+                                        urlSaveMessage = result.exceptionOrNull()?.message ?: "Gagal memperbarui link"
+                                    }
+                                }
+                            },
+                            enabled = !isSavingUrl && newTargetUrlInput.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ToskaBright,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_save_url_button")
+                        ) {
+                            if (isSavingUrl) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Menyinkronkan...", fontSize = 13.sp)
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.CloudSync,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Simpan & Sinkronkan", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Change Password Sub-section
+                        TextButton(
+                            onClick = {
+                                showChangePasswordSection = !showChangePasswordSection
+                                passwordChangeMessage = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = if (showChangePasswordSection) "Tutup Ganti Password" else "Ubah Password Admin",
+                                color = MalayGold,
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        if (showChangePasswordSection) {
+                            OutlinedTextField(
+                                value = newPasswordInput,
+                                onValueChange = {
+                                    newPasswordInput = it
+                                    passwordChangeMessage = null
+                                },
+                                label = { Text("Password Baru", color = Color.LightGray, fontSize = 11.sp) },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MalayGold,
+                                    unfocusedBorderColor = Color.Gray,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("admin_new_password_input")
+                            )
+
+                            if (passwordChangeMessage != null) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = passwordChangeMessage ?: "",
+                                    color = Color(0xFF69F0AE),
+                                    fontSize = 11.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Button(
+                                onClick = {
+                                    if (newPasswordInput.trim().length >= 4) {
+                                        appConfigRepo.updateAdminPassword(newPasswordInput.trim())
+                                        passwordChangeMessage = "Password admin berhasil diubah!"
+                                        newPasswordInput = ""
+                                    } else {
+                                        passwordChangeMessage = "Minimal 4 karakter!"
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ToskaDarkMedium,
+                                    contentColor = MalayGold
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Simpan Password Baru", fontSize = 12.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Hide Menu button
+                        OutlinedButton(
+                            onClick = {
+                                isSideMenuOpen = false
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color.LightGray
+                            ),
+                            border = BorderStroke(1.dp, Color.Gray.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Sembunyikan Menu", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidAppConfig(data) {
+      return data.targetUrl is string &&
+             data.targetUrl.size() > 0 &&
+             data.targetUrl.size() <= 2048 &&
+             data.targetUrl.matches('^https?://.+') &&
+             (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 100)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    match /app_config/{configId} {
+      // All synchronized devices must be able to observe and read the kiosk link
+      allow get, list: if true;
+
+      // Only valid configurations with valid URL structure can be created or updated
+      allow create: if isValidId(configId) &&
+                       incoming().keys().hasAll(['targetUrl']) &&
+                       incoming().keys().hasOnly(['targetUrl', 'updatedAt', 'updatedBy']) &&
+                       isValidAppConfig(incoming());
+
+      allow update: if isValidId(configId) &&
+                       isValidAppConfig(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['targetUrl', 'updatedAt', 'updatedBy']);
+
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
