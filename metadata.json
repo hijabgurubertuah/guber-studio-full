@@ -1,0 +1,8 @@
+{
+  "name": "GuberStudio full",
+  "description": "A full-screen kiosk browser for GuberStudio with an expanded top display area and Gemini navigation buttons hidden.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
